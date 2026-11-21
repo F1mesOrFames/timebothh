@@ -1,7 +1,6 @@
 
 import os
 import sqlite3
-import asyncio
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -16,13 +15,18 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from app import keep_alive
+
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 DB = "users.db"
 MOSCOW = ZoneInfo("Europe/Moscow")
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
 log = logging.getLogger(__name__)
 
 
@@ -43,19 +47,19 @@ def database():
 
 def get_users():
     with sqlite3.connect(DB) as db:
-        return db.execute(
-            "SELECT user_id, connection_id, first_name, "
-            "last_name FROM users WHERE enabled=1"
-        ).fetchall()
+        return db.execute("""
+            SELECT user_id, connection_id, first_name, last_name
+            FROM users
+            WHERE enabled=1
+        """).fetchall()
 
 
 def get_user(user_id):
     with sqlite3.connect(DB) as db:
-        return db.execute(
-            "SELECT connection_id, first_name, last_name, enabled "
-            "FROM users WHERE user_id=?",
-            (user_id,)
-        ).fetchone()
+        return db.execute("""
+            SELECT connection_id, first_name, last_name, enabled
+            FROM users WHERE user_id=?
+        """, (user_id,)).fetchone()
 
 
 def update_status(user_id, enabled):
@@ -83,7 +87,7 @@ async def update_name(bot, connection_id, first_name, last_name):
     )
 
 
-async def business_connected(update: Update, context):
+async def business_connected(update, context):
     bc = update.business_connection
     user_id = bc.user.id
 
@@ -93,8 +97,9 @@ async def business_connected(update: Update, context):
         return
 
     rights = bc.rights
+
     if not rights or not rights.can_edit_name:
-        log.warning("No permission to edit name: %s", user_id)
+        log.warning("No edit-name permission: %s", user_id)
         return
 
     first_name = bc.user.first_name or "Пользователь"
@@ -139,7 +144,7 @@ async def clock_loop(app):
             except TelegramError:
                 log.exception("Update failed for user %s", user_id)
 
-        await asyncio.sleep(60)
+        await __import__("asyncio").sleep(60)
 
 
 async def post_init(app):
@@ -152,8 +157,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Подключи меня через:\n"
         "Настройки → Telegram для бизнеса → Чат-боты.\n\n"
         "Разреши изменение имени профиля.\n\n"
-        "После подключения время будет обновляться "
-        "автоматически каждую минуту.\n\n"
+        "Время будет обновляться автоматически.\n\n"
         "/status — статус\n"
         "/pause — остановить и вернуть исходное имя\n"
         "/resume — возобновить обновление"
@@ -189,11 +193,14 @@ async def pause(update: Update, context):
             first_name=first_name,
             last_name=last_name or None,
         )
+
         update_status(user_id, 0)
+
         await update.message.reply_text(
             "⏸ Автообновление остановлено. "
             "Исходное имя восстановлено."
         )
+
     except TelegramError as e:
         await update.message.reply_text(
             f"Не удалось изменить имя: {e}"
@@ -214,10 +221,13 @@ async def resume(update: Update, context):
         await update_name(
             context.bot, connection_id, first_name, last_name
         )
+
         update_status(user_id, 1)
+
         await update.message.reply_text(
             "✅ Московское время снова обновляется!"
         )
+
     except TelegramError as e:
         await update.message.reply_text(
             f"Не удалось включить обновление: {e}"
@@ -226,28 +236,35 @@ async def resume(update: Update, context):
 
 def main():
     if not TOKEN:
-        raise RuntimeError("Укажи BOT_TOKEN в файле .env")
+        raise RuntimeError("Укажи BOT_TOKEN в переменных окружения")
 
     database()
 
-    app = (
+    keep_alive()
+
+    application = (
         Application.builder()
         .token(TOKEN)
         .post_init(post_init)
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("pause", pause))
-    app.add_handler(CommandHandler("resume", resume))
-    app.add_handler(
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("pause", pause))
+    application.add_handler(CommandHandler("resume", resume))
+
+    application.add_handler(
         BusinessConnectionHandler(business_connected)
     )
 
     log.info("Moscow Time Bot started")
-    app.run_polling(
-        allowed_updates=["message", "business_connection"]
+
+    application.run_polling(
+        allowed_updates=[
+            "message",
+            "business_connection"
+        ]
     )
 
 
